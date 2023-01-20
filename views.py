@@ -4,8 +4,10 @@ from django.shortcuts import redirect
 from django.urls import reverse
 from django.http import JsonResponse
 from django.conf import settings
-import requests
+from google.oauth2 import id_token
 from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+import requests
 
 
 
@@ -14,8 +16,10 @@ from google.oauth2.credentials import Credentials
 class GoogleCalendarInitView(View):
     def get(self, request, *args, **kwargs):
         # Generate the OAuth2 URL to redirect the user to
-        auth_url, state = get_authorization_url(request)
-        request.session['oauth_state'] = state
+        client_id = settings.GOOGLE_CLIENT_ID
+        redirect_uri = request.build_absolute_uri(reverse('calendar_redirect'))
+        scope = ['https://www.googleapis.com/auth/calendar.events']
+        auth_url = f'https://accounts.google.com/o/oauth2/auth?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope={",".join(scope)}'
         return redirect(auth_url)
 
 # This view will redirect the user to the OAuth2 URL to grant access to their calendar.
@@ -40,27 +44,13 @@ class GoogleCalendarRedirectView(View):
 
 
 
-# Define helper functions to handle the details of generating the OAuth2 URL, 
 # handling the redirect request, and getting the calendar events:
-
-def get_authorization_url(request):
-    client_id = settings.GOOGLE_CLIENT_ID
-    redirect_uri = request.build_absolute_uri(reverse('calendar_redirect'))
-    scope = ['https://www.googleapis.com/auth/calendar.events']
-    auth_url, state = google.auth.default().create_authorization_url(
-        client_id=client_id,
-        redirect_uri=redirect_uri,
-        scope=scope
-    )
-    return auth_url, state
-
 
 def handle_redirect(request):
     client_id = settings.GOOGLE_CLIENT_ID
     client_secret = settings.GOOGLE_CLIENT_SECRET
     redirect_uri = request.build_absolute_uri(reverse('calendar_redirect'))
     code = request.GET.get('code')
-    state = request.session.get('oauth_state')
     token_response = requests.post(
         'https://oauth2.googleapis.com/token',
         data={
@@ -71,4 +61,12 @@ def handle_redirect(request):
             'grant_type': 'authorization_code',
         },
     )
-    token = token_response.json
+    token = token_response.json()
+    return token['access_token']
+
+
+def get_calendar_events(access_token):
+    service = build('calendar', 'v3', credentials=Credentials.from_authorized_user_info(info=access_token))
+    events = service.events().list(calendarId='primary', timeMin=datetime.datetime.utcnow().isoformat() + 'Z',
+                                  maxResults=10, singleEvents=True, orderBy='startTime').execute()
+    return events.get('items', [])
